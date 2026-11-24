@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react";
 export default defineConfig(({ command }) => ({
   plugins: [react()],
 
-  base: command === "serve" ? "/" : "/Event-video-Analyser/",
+ base: command === "serve" ? "/" : "/eventlens/",
 
   server: {
     host: "0.0.0.0",
