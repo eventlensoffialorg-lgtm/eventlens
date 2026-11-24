@@ -19,15 +19,11 @@ def test_event_pipeline_classifies_event_and_summary():
 
     result = pipeline.process_detections(sample_detections)
 
-    assert result["event_type"] in {
-        "presentation",
-        "speech",
-        "panel discussion",
-    }
+    assert result["event_type"] == "unknown"
+    assert result["model_quality"] == "unavailable"
     assert "summary" in result
     assert len(result["summary"]) > 20
-    assert result["confidence"] >= 0.0
-    assert result["confidence"] <= 1.0
+    assert result["confidence"] is None
 
 
 def test_event_pipeline_handles_empty_detections():
@@ -37,7 +33,7 @@ def test_event_pipeline_handles_empty_detections():
 
     assert result["event_type"] == "unknown"
     assert "summary" in result
-    assert result["model_quality"] == "demo"
+    assert result["model_quality"] == "unavailable"
 
 
 def test_event_pipeline_counts_peak_people_per_frame_instead_of_recounting_them():
@@ -59,18 +55,69 @@ def test_event_pipeline_counts_peak_people_per_frame_instead_of_recounting_them(
     assert {item["class_name"]: item["count"] for item in result["top_objects"]}["person"] == 2
 
 
-def test_event_pipeline_accepts_labels_from_trained_dataset():
+def test_event_pipeline_accepts_labels_from_512_feature_event_model():
     pipeline = EventPipeline()
-    trained_classifier = DummyClassifier(strategy="constant", constant="town hall")
-    trained_classifier.fit([[0], [1]], ["town hall", "town hall"])
+    trained_classifier = DummyClassifier(
+        strategy="constant",
+        constant="project presentation",
+    )
+    trained_classifier.fit(
+        [[0] * 512, [1] * 512],
+        ["project presentation", "project presentation"],
+    )
     pipeline.model = trained_classifier
 
-    result = pipeline.process_detections([
-        {"class_name": "person", "confidence": 0.93},
-    ])
+    result = pipeline.classify_video_features(
+        np.zeros(512, dtype=np.float32),
+        {"top_objects": [{"class_name": "person", "count": 1}]},
+    )
 
-    assert result["event_type"] == "town hall"
-    assert '"town hall"' in result["summary"]
+    assert result["event_type"] == "project presentation"
+    assert '"project presentation"' in result["summary"]
+
+
+def test_event_pipeline_loads_model_and_metadata_package(tmp_path, monkeypatch):
+    trained_classifier = DummyClassifier(
+        strategy="constant",
+        constant="speech",
+    )
+    trained_classifier.fit(
+        [[0] * 512, [1] * 512],
+        ["speech", "speech"],
+    )
+    model_path = tmp_path / "event_classifier.joblib"
+    backend.joblib.dump({
+        "model": trained_classifier,
+        "metadata": {
+            "feature_dimension": 512,
+            "class_labels": ["speech"],
+        },
+    }, model_path)
+    monkeypatch.setenv("EVENT_MLP_MODEL_PATH", str(model_path))
+
+    pipeline = EventPipeline()
+
+    assert pipeline.model_quality == "trained"
+    assert pipeline.model_metadata["feature_dimension"] == 512
+    result = pipeline.classify_video_features(
+        np.ones(512, dtype=np.float32),
+        {"top_objects": []},
+    )
+    assert result["event_type"] == "speech"
+
+
+def test_action_predictions_keep_ucf_categories_and_do_not_claim_confidence():
+    recognizer = backend.VideoActionRecognizer()
+    predictions = recognizer._format_predictions(
+        np.array([0.3, 0.9, 0.2]),
+        categories=["BandMarching", "PlayingFlute", "WritingOnBoard"],
+    )
+
+    assert [item["action_name"] for item in predictions] == [
+        "PlayingFlute", "BandMarching", "WritingOnBoard"
+    ]
+    assert all(item["confidence"] is None for item in predictions)
+    assert all("uncalibrated" in item["score_type"] for item in predictions)
 
 
 def test_report_narrative_includes_observations_and_prototype_disclaimer():
@@ -124,16 +171,11 @@ def test_health_endpoint_does_not_require_authentication():
     assert response.json["status"] == "ok"
 
 
-def test_api_requires_supabase_configuration(monkeypatch):
-    monkeypatch.delenv("SUPABASE_URL", raising=False)
-    monkeypatch.delenv("SUPABASE_PUBLISHABLE_KEY", raising=False)
-    monkeypatch.delenv("VITE_SUPABASE_URL", raising=False)
-    monkeypatch.delenv("VITE_SUPABASE_PUBLISHABLE_KEY", raising=False)
-
+def test_api_requires_authentication():
     response = backend.app.test_client().get("/api/reports")
 
-    assert response.status_code == 503
-    assert response.json["error"] == "The API authentication service is not configured."
+    assert response.status_code == 401
+    assert response.json["error"] == "Authentication is required."
 
 
 def test_backend_accepts_frontend_supabase_variables_without_a_token(monkeypatch):
@@ -148,61 +190,112 @@ def test_backend_accepts_frontend_supabase_variables_without_a_token(monkeypatch
     assert response.json["error"] == "Authentication is required."
 
 
-def test_reports_are_persisted_and_isolated_by_user(tmp_path, monkeypatch):
-    monkeypatch.setattr(backend, "DATABASE_PATH", tmp_path / "reports.sqlite3")
-    backend.initialize_database()
+def test_reports_are_persisted_and_isolated_by_user(monkeypatch):
+    from contextlib import nullcontext
+
     report = {
         "id": "report-1",
         "created_at": "2026-01-01T00:00:00",
         "summary": "A test report",
     }
-    backend.save_report(report, "user-1")
 
-    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
-    monkeypatch.setenv("SUPABASE_PUBLISHABLE_KEY", "publishable-key")
-    def authenticate(*args, **kwargs):
-        user_id = kwargs["headers"]["Authorization"].removeprefix("Bearer ")
-        return SimpleNamespace(status_code=200, json=lambda: {"id": user_id})
+    class FakeCursor:
+     def execute(self, query, params=None):
+        self.params = params
 
-    monkeypatch.setattr(backend.requests, "get", authenticate)
+     def fetchone(self):
+        import hashlib
+
+        token_hash = self.params[0]
+
+        if token_hash == hashlib.sha256(b"test-token").hexdigest():
+            user_id = "user-1"
+        else:
+            user_id = "user-2"
+
+        return {
+            "id": user_id,
+            "full_name": "Test User",
+            "email": "test@example.com",
+        }
+
+    class FakeConnection:
+        def cursor(self):
+            return nullcontext(FakeCursor())
+
+    monkeypatch.setattr(
+        backend,
+        "get_db_connection",
+        lambda: nullcontext(FakeConnection()),
+    )
+
+    monkeypatch.setattr(
+        backend,
+        "get_user_report",
+        lambda user_id, report_id: (
+            report if user_id == "user-1" and report_id == "report-1"
+            else None
+        ),
+    )
+
     client = backend.app.test_client()
 
     own_report = client.get(
         "/api/reports/report-1",
-        headers={"Authorization": "Bearer user-1"},
+        headers={"Authorization": "Bearer test-token"},
     )
+
     other_user_report = client.get(
         "/api/reports/report-1",
-        headers={"Authorization": "Bearer user-2"},
+        headers={"Authorization": "Bearer another-token"},
     )
 
     assert own_report.status_code == 200
     assert own_report.json["summary"] == "A test report"
     assert other_user_report.status_code == 404
+    
 
 
 def test_analyze_route_returns_peak_people_count_and_runs_detection_once_per_frame(
-    tmp_path, monkeypatch
+    monkeypatch
 ):
-    monkeypatch.setattr(backend, "DATABASE_PATH", tmp_path / "reports.sqlite3")
-    backend.initialize_database()
-    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
-    monkeypatch.setenv("SUPABASE_PUBLISHABLE_KEY", "publishable-key")
+    from contextlib import nullcontext
+
+    class FakeCursor:
+        def execute(self, query, params=None):
+            pass
+
+        def fetchone(self):
+            return {
+                "id": "user-1",
+                "full_name": "Test User",
+                "email": "test@example.com",
+            }
+
+    class FakeConnection:
+        def cursor(self):
+            return nullcontext(FakeCursor())
+
     monkeypatch.setattr(
-        backend.requests,
-        "get",
-        lambda *args, **kwargs: SimpleNamespace(
-            status_code=200,
-            json=lambda: {"id": "user-1"},
-        ),
+        backend,
+        "get_db_connection",
+        lambda: nullcontext(FakeConnection()),
     )
+
     frames = [np.zeros((48, 64, 3), dtype=np.uint8) for _ in range(2)]
-    monkeypatch.setattr(backend, "extract_sample_frames", lambda *args, **kwargs: frames)
+
+    monkeypatch.setattr(
+        backend,
+        "extract_sample_frames",
+        lambda *args, **kwargs: (frames, [0.0, 3.0], 6.0),
+    )
+
     detected = [
         {"class_name": "person", "confidence": 0.95, "bbox": [5, 5, 30, 45]},
         {"class_name": "person", "confidence": 0.92, "bbox": [35, 5, 60, 45]},
         {"class_name": "chair", "confidence": 0.89, "bbox": [20, 25, 45, 45]},
     ]
+
     yolo_calls = []
 
     def detect(_frame):
@@ -212,7 +305,11 @@ def test_analyze_route_returns_peak_people_count_and_runs_detection_once_per_fra
     monkeypatch.setattr(backend.pipeline, "run_yolo", detect)
     monkeypatch.setattr(backend.action_recognizer, "predict", lambda _frames: [])
     monkeypatch.setattr(backend.cv2, "imwrite", lambda *args, **kwargs: True)
-    monkeypatch.setattr(backend, "create_summary_video", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        backend,
+        "create_summary_video",
+        lambda *args, **kwargs: None,
+    )
 
     response = backend.app.test_client().post(
         "/api/analyze",

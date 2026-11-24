@@ -61,30 +61,44 @@ checks it with Supabase Auth. Reports and generated media are stored under
 `DATA_DIR` (the default is the backend directory; Render mounts its persistent
 disk at `/var/data`).
 
-## MLP training
+## Local event classifier preparation and training
 
-The checked-in demo classifier is trained from a tiny illustrative sample. Its
-predictions are not production-quality and are explicitly marked `demo` in
-reports. For meaningful event classification, train on representative,
-accurately labeled samples from your own videos.
+The custom event classifier is not trained in the checked-in project. The label
+CSV currently contains headers only. Do not train or use it as ground truth
+until valid video paths and genuine labels have been added.
 
-Create a CSV with the columns below, one labeled observation per row, then run:
+Use this CSV format:
+
+```text
+video_path,event_label,start_time,end_time,source,split
+```
+
+Prepare and validate records:
 
 ```powershell
 cd backend
-python train_model.py path\to\labeled-events.csv
+python prepare_dataset.py ..\EventLens_Datasets\labels\event_video_labels.csv --output ..\EventLens_Datasets\processed\event_video_labels_clean.csv
 ```
 
-Required CSV columns:
+After adding legitimate labelled videos and train/validation/test splits, train:
 
-```text
-persons,laptops,monitors,microphones,chairs,phones,mean_confidence,event_type
+```powershell
+python train_event_classifier.py ..\EventLens_Datasets\processed\event_video_labels_clean.csv --output event_classifier.joblib
+python evaluate_event_classifier.py event_classifier.json
 ```
 
-The resulting `event_classifier.joblib` is intentionally ignored by Git. Keep
-it private, or add it to a private model store; to deploy a trained model, set
-`EVENT_MLP_MODEL_PATH` in Render to its mounted path. The default YOLOv8n model
-detects general objects; it does not directly recognize every event category.
+Set `EVENT_MLP_MODEL_PATH` to the resulting model for deployment. The default
+YOLOv8n model detects general objects only and must not be interpreted as event
+classification evidence.
+
+## Offline local ML operation
+
+Event video analysis is designed to run locally with OpenCV, YOLO, and
+PyTorch/R3D-18. No external AI API key is required.
+
+The custom event classifier remains untrained until a validated labelled video
+dataset is available. In that case, EventLens returns an explicitly unclassified
+result rather than inventing an event category.
 
 ## Reports and limitations
 

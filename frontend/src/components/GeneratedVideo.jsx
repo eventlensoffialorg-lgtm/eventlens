@@ -10,7 +10,10 @@ export default function GeneratedVideo({ videoUrl }) {
     let active = true;
     let objectUrl = "";
 
-    if (!videoUrl?.startsWith("/api/media/")) {
+    if (
+  !videoUrl?.startsWith("/api/media/") &&
+  !videoUrl?.startsWith("/api/original/")
+) {
       setSource(videoUrl || "");
       setFailed(false);
       return undefined;

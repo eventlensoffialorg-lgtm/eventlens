@@ -1,0 +1,14 @@
+{
+    "BandMarching": 0,
+    "Drumming": 1,
+    "IceDancing": 2,
+    "MilitaryParade": 3,
+    "PlayingDhol": 4,
+    "PlayingFlute": 5,
+    "PlayingGuitar": 6,
+    "PlayingPiano": 7,
+    "PlayingTabla": 8,
+    "PlayingViolin": 9,
+    "SalsaSpin": 10,
+    "WritingOnBoard": 11
+}

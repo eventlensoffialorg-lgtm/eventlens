@@ -1,0 +1,20 @@
+{
+    "model": "R3D-18 KINETICS400_V1 + LinearSVC",
+    "feature_dimensions": 512,
+    "input_frames": 16,
+    "input_resolution": "112x112",
+    "classes": [
+        "BandMarching",
+        "Drumming",
+        "IceDancing",
+        "MilitaryParade",
+        "PlayingDhol",
+        "PlayingFlute",
+        "PlayingGuitar",
+        "PlayingPiano",
+        "PlayingTabla",
+        "PlayingViolin",
+        "SalsaSpin",
+        "WritingOnBoard"
+    ]
+}
