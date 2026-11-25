@@ -1,6 +1,7 @@
-
 import os
 import pymysql
+import certifi
+
 from contextlib import contextmanager
 from dotenv import load_dotenv
 
@@ -10,15 +11,21 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 
 def get_connection():
+
+    host = os.getenv("MYSQL_HOST", "localhost")
+
     connection = pymysql.connect(
-        host=os.getenv("MYSQL_HOST", "localhost"),
+        host=host,
         port=int(os.getenv("MYSQL_PORT", "3306")),
         user=os.getenv("MYSQL_USER", "root"),
         password=os.getenv("MYSQL_PASSWORD", ""),
         database=os.getenv("MYSQL_DATABASE", "eventlens_db"),
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
-        autocommit=False
+        autocommit=False,
+        ssl_ca=certifi.where() if host != "localhost" and host != "127.0.0.1" else None,
+        ssl_verify_cert=host != "localhost" and host != "127.0.0.1",
+        ssl_verify_identity=host != "localhost" and host != "127.0.0.1"
     )
 
     return connection
@@ -26,6 +33,7 @@ def get_connection():
 
 @contextmanager
 def get_db_connection():
+
     connection = get_connection()
 
     try:

@@ -13,3 +13,4 @@ PyMySQL==1.1.1
 reportlab
 imageio-ffmpeg
 lap==0.5.12
+certifi
