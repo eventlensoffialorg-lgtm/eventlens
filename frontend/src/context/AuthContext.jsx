@@ -13,6 +13,16 @@ export function AuthProvider({ children }) {
     return current;
   }
 
+  function setAuthenticatedSession(response) {
+    if (!response?.token || !response?.user) {
+      throw new Error("The server returned an invalid login session.");
+    }
+
+    const nextSession = { access_token: response.token, user: response.user };
+    setSession(nextSession);
+    return nextSession;
+  }
+
   useEffect(() => {
     let active = true;
 
@@ -21,7 +31,10 @@ export function AuthProvider({ children }) {
         if (active) setSession(current);
       })
       .catch((error) => {
-        console.error("Session lookup failed:", error);
+        console.error(
+          "Could not verify the current EventLens session:",
+          error?.response?.data?.error || error?.message || "Unexpected network error."
+        );
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -37,7 +50,8 @@ export function AuthProvider({ children }) {
     user: session?.user ?? null,
     loading,
     isConfigured: true,
-    refreshSession
+    refreshSession,
+    setAuthenticatedSession
   }), [session, loading]);
 
   return (

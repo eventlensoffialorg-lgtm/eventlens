@@ -2,20 +2,20 @@ import api from "./api";
 
 const TOKEN_KEY = "eventlens_token";
 
-export async function signUp({ fullName, email, password }) {
-  const { data } = await api.post("/auth/register", {
-    fullName,
-    email,
-    password
-  });
-
+export async function signUp({ fullName, email }) {
+  const { data } = await api.post("/auth/register", { fullName, email });
   return data;
 }
 
 export async function verifyEmailOtp({ email, otp }) {
-  const { data } = await api.post("/auth/verify-otp", {
+  const { data } = await api.post("/auth/verify-otp", { email, otp });
+  return data;
+}
+
+export async function completeRegistration({ email, password }) {
+  const { data } = await api.post("/auth/complete-registration", {
     email,
-    otp
+    password
   });
 
   if (data.token) {
@@ -72,14 +72,18 @@ export async function getCurrentSession() {
   }
 
   try {
-    const { data } = await api.get("/auth/me");
+    const { data } = await api.get("/auth/me", { timeout: 15000 });
 
     return {
       access_token: token,
       user: data.user
     };
-  } catch {
-    localStorage.removeItem(TOKEN_KEY);
-    return null;
+  } catch (error) {
+    if ([401, 403].includes(error?.response?.status)) {
+      localStorage.removeItem(TOKEN_KEY);
+      return null;
+    }
+
+    throw error;
   }
 }

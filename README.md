@@ -1,37 +1,32 @@
 # EventLens
 
-EventLens is a React/Vite application with a Flask video-analysis API. It uses
-Supabase Auth for accounts, YOLOv8 for object detection, an MLP for event
-classification, and offline natural-language templates for reports.
+EventLens is a React/Vite frontend with a Flask video-analysis API. It uses
+TiDB Cloud (MySQL-compatible) for accounts, OTPs, sessions, and reports; Gmail
+SMTP for email verification; YOLOv8 for object detection; an MLP for event
+classification; and offline natural-language templates for reports.
 
-## Deploy on Render
+## Deployment
 
-The root `render.yaml` defines two Render services:
+The Flask API remains deployed on Render with persistent storage for reports and
+generated media. The existing Render Blueprint is preserved.
 
-- `eventlens-web`: the public React website.
-- `eventlens-api`: the authenticated Flask API, with a persistent disk for
-  reports and generated media.
+The GitHub Actions workflow at `.github/workflows/deploy.yml` builds the
+frontend and deploys only `frontend/dist` to GitHub Pages. The Vite base path is
+`/eventlens/`; the expected Pages URL is
+`https://eventlensoffialorg-lgtm.github.io/eventlens/`. The workflow sets
+`VITE_API_BASE_URL` to `https://eventlens-xqy5.onrender.com/api`.
 
-To deploy:
+The Flask backend is not published through GitHub Pages. Keep TiDB and Gmail
+credentials in Render's environment settings, never in frontend `VITE_`
+variables or the repository.
 
-1. Push this project to a GitHub repository you can access.
-2. In Render, choose **New + > Blueprint** and connect that repository.
-3. Review the services and costs before applying. The API uses a paid Standard
-   instance and a 1 GB persistent disk so YOLO has memory and reports survive
-   restarts. Render may ask you to add a payment method.
-4. Enter the same Supabase project URL and publishable key for the backend
-   (`SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`) and frontend
-   (`VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`) when prompted.
-   Never use a Supabase service-role/secret key in the frontend.
-5. After the static site deploys, open its `onrender.com` URL and add it to
-   Supabase Dashboard > Authentication > URL Configuration as the Site URL and
-   an allowed Redirect URL (for example `https://your-site.onrender.com/**`).
-6. Confirm email/password sign-in and the API health endpoint:
-   `https://your-api.onrender.com/api/health`.
-
-The frontend API host is wired to the backend host by the Render Blueprint.
-The API validates Supabase access tokens and scopes reports/media to the
-authenticated user.
+Render environment configuration uses `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`,
+`MYSQL_PASSWORD`, `MYSQL_DATABASE`, `MYSQL_SSL`, `MYSQL_SSL_VERIFY_CERT`,
+`MYSQL_SSL_VERIFY_IDENTITY`, and optionally `MYSQL_SSL_CA` and the database
+timeouts. Gmail delivery uses `SMTP_EMAIL`, `SMTP_PASSWORD`, and the `SMTP_*`
+host, port, and TLS/SSL settings supported by the backend. Set actual values in
+Render only. Verify
+`/api/health` and `/api/health/database` after a backend deployment.
 
 ## Local development
 
@@ -44,22 +39,22 @@ npm ci
 npm run dev
 ```
 
-Set the Supabase project URL and publishable key in `frontend/.env.local`.
+The frontend `.env.example` points to a local Flask API for development. The
+GitHub Pages workflow injects the production Render API URL at build time.
 
 Backend:
 
 ```powershell
 cd backend
 python -m pip install -r requirements.txt
-$env:SUPABASE_URL = "https://your-project.supabase.co"
-$env:SUPABASE_PUBLISHABLE_KEY = "your-publishable-key"
+# Configure TiDB and Gmail SMTP environment variables outside source control.
 python app.py
 ```
 
-The browser sends the signed-in user's access token to the API. The backend
-checks it with Supabase Auth. Reports and generated media are stored under
-`DATA_DIR` (the default is the backend directory; Render mounts its persistent
-disk at `/var/data`).
+Registration verifies email by OTP before password creation. The backend
+validates its own bearer tokens against TiDB-backed sessions. Reports and
+generated media are stored under `DATA_DIR` (Render mounts persistent storage
+at `/var/data`).
 
 ## Local event classifier preparation and training
 

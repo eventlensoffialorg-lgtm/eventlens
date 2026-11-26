@@ -12,6 +12,7 @@ import {
 
 import Brand from "../components/Brand";
 import {
+  completeRegistration,
   signIn,
   signUp,
   verifyEmailOtp
@@ -37,7 +38,7 @@ export default function Login() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  const { isConfigured, refreshSession } = useAuth();
+  const { isConfigured, setAuthenticatedSession } = useAuth();
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -53,8 +54,8 @@ export default function Login() {
     setBusy(true);
 
     try {
-      await signIn({ email, password });
-      await refreshSession();
+      const session = await signIn({ email, password });
+      setAuthenticatedSession(session);
 
       navigate(
         location.state?.from?.pathname || "/dashboard",
@@ -71,21 +72,10 @@ export default function Login() {
     e.preventDefault();
     setError("");
     setSuccess("");
-
-    if (password.length < 8) {
-      setError("Password must contain at least 8 characters.");
-      return;
-    }
-
-    if (password !== confirmPassword) {
-      setError("Passwords do not match.");
-      return;
-    }
-<div className="auth-tabs"></div>
     setBusy(true);
 
     try {
-      await signUp({ fullName, email, password });
+      await signUp({ fullName, email });
 
       setStep("otp");
       setSuccess("A six-digit verification code has been sent to your email.");
@@ -104,8 +94,35 @@ export default function Login() {
 
     try {
       await verifyEmailOtp({ email, otp });
-      await refreshSession();
+      setStep("password");
+      setSuccess("Email verified. Create a password to finish registration.");
+    } catch (err) {
+      setError(getError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
 
+  async function handleCompleteRegistration(e) {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+
+    if (password.length < 8) {
+      setError("Password must contain at least 8 characters.");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+
+    setBusy(true);
+
+    try {
+      const session = await completeRegistration({ email, password });
+      setAuthenticatedSession(session);
       navigate("/dashboard", { replace: true });
     } catch (err) {
       setError(getError(err));
@@ -120,6 +137,8 @@ export default function Login() {
     setError("");
     setSuccess("");
     setOtp("");
+    setPassword("");
+    setConfirmPassword("");
   }
 
   return (
@@ -232,6 +251,88 @@ export default function Login() {
                   onClick={() => {
                     setStep("form");
                     setOtp("");
+                    setError("");
+                    setSuccess("");
+                  }}
+                >
+                  Back to registration
+                </button>
+              </p>
+            </>
+          ) : step === "password" ? (
+            <>
+              <div className="eyebrow">REGISTRATION</div>
+
+              <h2>Create a password</h2>
+
+              <p className="auth-subtitle">
+                Email verified for {email}. Create a password to finish setting
+                up your account.
+              </p>
+
+              <form className="form-stack" onSubmit={handleCompleteRegistration}>
+                <label>
+                  Password
+
+                  <div className="input-wrap">
+                    <LockKeyhole size={18} />
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="At least 8 characters"
+                      autoComplete="new-password"
+                      minLength={8}
+                      required
+                    />
+                    <button
+                      type="button"
+                      className="input-icon-button"
+                      onClick={() => setShowPassword(!showPassword)}
+                    >
+                      {showPassword
+                        ? <EyeOff size={18} />
+                        : <Eye size={18} />}
+                    </button>
+                  </div>
+                </label>
+
+                <label>
+                  Confirm password
+
+                  <div className="input-wrap">
+                    <LockKeyhole size={18} />
+                    <input
+                      type="password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      placeholder="Confirm your password"
+                      autoComplete="new-password"
+                      required
+                    />
+                  </div>
+                </label>
+
+                {error && <p className="field-error">{error}</p>}
+                {success && <p className="success-message">{success}</p>}
+
+                <button
+                  className="primary-button full"
+                  disabled={busy || !isConfigured}
+                >
+                  {busy ? "Creating account..." : "Create account"}
+                  <ArrowRight size={18} />
+                </button>
+              </form>
+
+              <p className="auth-switch">
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => {
+                    setStep("form");
+                    setPassword("");
+                    setConfirmPassword("");
                     setError("");
                     setSuccess("");
                   }}
@@ -360,51 +461,6 @@ export default function Login() {
                     </div>
                   </label>
 
-                  <label>
-                    Password
-
-                    <div className="input-wrap">
-                      <LockKeyhole size={18} />
-
-                      <input
-                        type={showPassword ? "text" : "password"}
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        placeholder="At least 8 characters"
-                        autoComplete="new-password"
-                        minLength={8}
-                        required
-                      />
-
-                      <button
-                        type="button"
-                        className="input-icon-button"
-                        onClick={() => setShowPassword(!showPassword)}
-                      >
-                        {showPassword
-                          ? <EyeOff size={18} />
-                          : <Eye size={18} />}
-                      </button>
-                    </div>
-                  </label>
-
-                  <label>
-                    Confirm password
-
-                    <div className="input-wrap">
-                      <LockKeyhole size={18} />
-
-                      <input
-                        type="password"
-                        value={confirmPassword}
-                        onChange={(e) => setConfirmPassword(e.target.value)}
-                        placeholder="Confirm your password"
-                        autoComplete="new-password"
-                        required
-                      />
-                    </div>
-                  </label>
-
                   {error && (
                     <p className="field-error">{error}</p>
                   )}
@@ -413,7 +469,7 @@ export default function Login() {
                     className="primary-button full"
                     disabled={busy || !isConfigured}
                   >
-                    {busy ? "Creating account..." : "Create account"}
+                    {busy ? "Sending code..." : "Send verification code"}
                     <ArrowRight size={18} />
                   </button>
 

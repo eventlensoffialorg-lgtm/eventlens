@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const configuredApiUrl =
-  import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:5000/api";
+  import.meta.env.VITE_API_BASE_URL || "https://eventlens-xqy5.onrender.com/api";
 
 const absoluteApiUrl = /^https?:\/\//i.test(configuredApiUrl)
   ? configuredApiUrl

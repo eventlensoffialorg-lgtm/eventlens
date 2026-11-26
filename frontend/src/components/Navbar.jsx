@@ -4,12 +4,18 @@ import { signOut } from "../services/auth";
 import { useNavigate } from "react-router-dom";
 
 export default function Navbar() {
-  const { user } = useAuth();
+  const { user, refreshSession } = useAuth();
   const navigate = useNavigate();
-  const name = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "User";
+  const name = user?.full_name || user?.user_metadata?.full_name || user?.email?.split("@")[0] || "User";
   async function handleLogout() {
-    try { await signOut(); navigate("/login"); }
-    catch (error) { alert(error.message); }
+    try {
+      await signOut();
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      await refreshSession();
+      navigate("/login");
+    }
   }
   return <header className="topbar">
     <div><span className="topbar-kicker">YOUR EVENT, UNDERSTOOD</span><span className="topbar-title">Event intelligence workspace</span></div>
