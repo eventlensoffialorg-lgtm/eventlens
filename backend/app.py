@@ -8,7 +8,13 @@ import hashlib
 import threading
 import subprocess
 import imageio_ffmpeg
-from database import get_db_connection, initialize_database as initialize_mysql_database
+from database import (
+    DatabaseConfigurationError,
+    DatabaseUnavailableError,
+    get_db_connection,
+    initialize_database as initialize_mysql_database,
+    verify_required_tables,
+)
 import textwrap
 import uuid
 from collections import Counter
@@ -1481,8 +1487,7 @@ def require_auth(handler):
 
                     user = cursor.fetchone()
 
-        except Exception:
-            logging.exception("MySQL authentication failed")
+        except DatabaseUnavailableError:
             return jsonify({"error": "Authentication service is unavailable."}), 503
 
         if not user:
@@ -1495,7 +1500,56 @@ def require_auth(handler):
 
     return wrapped
 
-initialize_mysql_database()
+database_schema_initialized = False
+database_initialization_lock = threading.Lock()
+
+
+def ensure_database_initialized():
+    global database_schema_initialized
+    if database_schema_initialized:
+        return True
+
+    with database_initialization_lock:
+        if database_schema_initialized:
+            return True
+        initialize_mysql_database()
+        database_schema_initialized = True
+    return True
+
+
+try:
+    ensure_database_initialized()
+except (DatabaseConfigurationError, DatabaseUnavailableError):
+    logging.warning(
+        "Database initialization was deferred; check database connectivity and configuration."
+    )
+
+
+@app.before_request
+def initialize_database_when_available():
+    if (
+        request.method == "OPTIONS"
+        or request.path in {"/api/health", "/api/health/database"}
+    ):
+        return None
+
+    try:
+        ensure_database_initialized()
+    except (DatabaseConfigurationError, DatabaseUnavailableError):
+        return jsonify({
+            "error": "Database service is temporarily unavailable."
+        }), 503
+    return None
+
+
+@app.errorhandler(DatabaseUnavailableError)
+def database_unavailable(_error):
+    return jsonify({"error": "Database service is temporarily unavailable."}), 503
+
+
+@app.errorhandler(DatabaseConfigurationError)
+def database_configuration_error(_error):
+    return jsonify({"error": "Database service is not configured."}), 503
 
 
 @app.errorhandler(413)
@@ -1506,6 +1560,23 @@ def request_entity_too_large(_error):
 @app.route("/api/health", methods=["GET"])
 def health_check():
     return jsonify({"status": "ok", "timestamp": datetime.utcnow().isoformat()})
+
+
+@app.route("/api/health/database", methods=["GET"])
+def database_health_check():
+    try:
+        verify_required_tables()
+    except (DatabaseConfigurationError, DatabaseUnavailableError):
+        return jsonify({
+            "status": "error",
+            "database": "unavailable",
+        }), 503
+
+    return jsonify({
+        "status": "ok",
+        "database": "connected",
+        "schema": "ready",
+    })
 
 
 @app.route("/api/media/<path:filename>", methods=["GET"])
