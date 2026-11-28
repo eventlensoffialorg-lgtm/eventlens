@@ -225,6 +225,12 @@ def test_reports_are_persisted_and_isolated_by_user(monkeypatch):
 
     monkeypatch.setattr(
         backend,
+        "ensure_database_initialized",
+        lambda: True,
+    )
+
+    monkeypatch.setattr(
+        backend,
         "get_db_connection",
         lambda: nullcontext(FakeConnection()),
     )
@@ -257,8 +263,10 @@ def test_reports_are_persisted_and_isolated_by_user(monkeypatch):
 
 
 def test_analyze_route_returns_peak_people_count_and_runs_detection_once_per_frame(
-    monkeypatch
+    monkeypatch,
+    tmp_path,
 ):
+    import time
     from contextlib import nullcontext
 
     class FakeCursor:
@@ -276,14 +284,30 @@ def test_analyze_route_returns_peak_people_count_and_runs_detection_once_per_fra
         def cursor(self):
             return nullcontext(FakeCursor())
 
+    monkeypatch.setattr(backend, "ensure_database_initialized", lambda: True)
     monkeypatch.setattr(
         backend,
         "get_db_connection",
         lambda: nullcontext(FakeConnection()),
     )
+    monkeypatch.setattr(backend, "UPLOAD_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(backend, "GENERATED_DIR", tmp_path / "generated")
+    backend.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    backend.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(backend, "save_report", lambda *_args, **_kwargs: None)
+
+    video_file = tmp_path / "event.mp4"
+    writer = backend.cv2.VideoWriter(
+        str(video_file),
+        backend.cv2.VideoWriter_fourcc(*"mp4v"),
+        10,
+        (64, 48),
+    )
+    for _ in range(4):
+        writer.write(np.zeros((48, 64, 3), dtype=np.uint8))
+    writer.release()
 
     frames = [np.zeros((48, 64, 3), dtype=np.uint8) for _ in range(2)]
-
     monkeypatch.setattr(
         backend,
         "extract_sample_frames",
@@ -303,13 +327,115 @@ def test_analyze_route_returns_peak_people_count_and_runs_detection_once_per_fra
         return detected
 
     monkeypatch.setattr(backend.pipeline, "run_yolo", detect)
-    monkeypatch.setattr(backend.action_recognizer, "predict", lambda _frames: [])
-    monkeypatch.setattr(backend.cv2, "imwrite", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        backend.pipeline,
+        "track_people",
+        lambda _frames: {
+            "unique_tracked_people": 2,
+            "peak_tracked_people": 2,
+            "tracking_status": "ready",
+        },
+    )
+    monkeypatch.setattr(
+        backend.action_recognizer,
+        "predict_video",
+        lambda _path: {
+            "action_predictions": [],
+            "action_clip_details": [],
+            "action_timeline": [],
+            "action_summary": "",
+        },
+    )
+    monkeypatch.setattr(
+        backend.event_mlp_classifier,
+        "predict_video",
+        lambda _path: {
+            "status": "success",
+            "classification_status": "uncertain",
+            "event_type": "Uncertain",
+            "predicted_category": "Presentation",
+            "assigned_category": None,
+            "confidence": None,
+            "model_score": 0.78,
+            "score_type": "uncalibrated_softmax_score",
+            "confidence_calibrated": False,
+            "model_quality": "unverified",
+            "features_dimension": 5120,
+            "summary": (
+                'The MLP top candidate is "Presentation" with raw softmax score '
+                "0.780. This score is not calibrated; no event category has been assigned."
+            ),
+        },
+    )
+    monkeypatch.setattr(backend.cv2, "imwrite", lambda *args, **_kwargs: True)
     monkeypatch.setattr(
         backend,
-        "create_summary_video",
+        "create_full_detection_video",
         lambda *args, **kwargs: None,
     )
+
+    client = backend.app.test_client()
+    with video_file.open("rb") as stream:
+        response = client.post(
+            "/api/analyze",
+            data={"video": (stream, "event.mp4")},
+            headers={"Authorization": "Bearer test-token"},
+            content_type="multipart/form-data",
+        )
+
+    assert response.status_code == 202
+    job_id = response.get_json()["job_id"]
+
+    job = None
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        poll = client.get(
+            f"/api/analyses/{job_id}",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        assert poll.status_code == 200
+        job = poll.get_json()
+        if job["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.05)
+
+    assert job is not None
+    assert job["status"] == "completed"
+    assert job["result"]["peak_person_count"] == 2
+    assert job["result"]["sampled_detection_count"] == 6
+    assert job["result"]["event_type"] == "Uncertain"
+    assert job["result"]["event_classification"]["predicted_category"] == "Presentation"
+    assert "2 person(s)" in job["result"]["narrative"]
+    assert "visible-person figure is a peak per-frame count" in job["result"]["narrative"]
+    assert len(yolo_calls) == len(frames)
+
+
+def test_analyze_route_rejects_unreadable_video_bytes_with_400(monkeypatch, tmp_path):
+    from contextlib import nullcontext
+
+    class FakeCursor:
+        def execute(self, query, params=None):
+            pass
+
+        def fetchone(self):
+            return {
+                "id": "user-1",
+                "full_name": "Test User",
+                "email": "test@example.com",
+            }
+
+    class FakeConnection:
+        def cursor(self):
+            return nullcontext(FakeCursor())
+
+    monkeypatch.setattr(backend, "ensure_database_initialized", lambda: True)
+    monkeypatch.setattr(
+        backend,
+        "get_db_connection",
+        lambda: nullcontext(FakeConnection()),
+    )
+    monkeypatch.setattr(backend, "UPLOAD_DIR", tmp_path / "uploads")
+    backend.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
     response = backend.app.test_client().post(
         "/api/analyze",
@@ -318,8 +444,5 @@ def test_analyze_route_returns_peak_people_count_and_runs_detection_once_per_fra
         content_type="multipart/form-data",
     )
 
-    assert response.status_code == 200
-    assert response.json["result"]["peak_person_count"] == 2
-    assert response.json["result"]["sampled_detection_count"] == 6
-    assert "peak number of visible person detections" in response.json["result"]["narrative"]
-    assert len(yolo_calls) == len(frames)
+    assert response.status_code == 400
+    assert "could not be read as a video" in response.get_json()["error"]

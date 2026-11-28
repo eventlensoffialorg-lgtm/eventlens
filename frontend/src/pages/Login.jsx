@@ -12,6 +12,7 @@ import {
 
 import Brand from "../components/Brand";
 import {
+  completeRegistration,
   signIn,
   signUp,
   verifyEmailOtp
@@ -28,6 +29,7 @@ export default function Login() {
 
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
+  const [verifiedEmail, setVerifiedEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [otp, setOtp] = useState("");
@@ -72,20 +74,10 @@ export default function Login() {
     setError("");
     setSuccess("");
 
-    if (password.length < 8) {
-      setError("Password must contain at least 8 characters.");
-      return;
-    }
-
-    if (password !== confirmPassword) {
-      setError("Passwords do not match.");
-      return;
-    }
-<div className="auth-tabs"></div>
     setBusy(true);
 
     try {
-      await signUp({ fullName, email, password });
+      await signUp({ fullName, email });
 
       setStep("otp");
       setSuccess("A six-digit verification code has been sent to your email.");
@@ -103,7 +95,39 @@ export default function Login() {
     setBusy(true);
 
     try {
-      await verifyEmailOtp({ email, otp });
+      const result = await verifyEmailOtp({ email, otp });
+      setVerifiedEmail(result.email || email);
+      setStep("password");
+      setOtp("");
+      setSuccess("Email verified. Create a password to finish registration.");
+    } catch (err) {
+      setError(getError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCompleteRegistration(e) {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+
+    if (password.length < 8) {
+      setError("Password must contain at least 8 characters.");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await completeRegistration({
+        email: verifiedEmail,
+        password
+      });
       await refreshSession();
 
       navigate("/dashboard", { replace: true });
@@ -120,6 +144,9 @@ export default function Login() {
     setError("");
     setSuccess("");
     setOtp("");
+    setPassword("");
+    setConfirmPassword("");
+    setVerifiedEmail("");
   }
 
   return (
@@ -239,6 +266,80 @@ export default function Login() {
                   Back to registration
                 </button>
               </p>
+            </>
+          ) : step === "password" ? (
+            <>
+              <div className="eyebrow">EMAIL VERIFIED</div>
+
+              <h2>Create a password</h2>
+
+              <p className="auth-subtitle">
+                Choose a password to finish creating your account.
+              </p>
+
+              <form
+                onSubmit={handleCompleteRegistration}
+                className="form-stack"
+              >
+                <label>
+                  Password
+
+                  <div className="input-wrap">
+                    <LockKeyhole size={18} />
+
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="At least 8 characters"
+                      autoComplete="new-password"
+                      minLength={8}
+                      required
+                    />
+
+                    <button
+                      type="button"
+                      className="input-icon-button"
+                      onClick={() => setShowPassword(!showPassword)}
+                    >
+                      {showPassword
+                        ? <EyeOff size={18} />
+                        : <Eye size={18} />}
+                    </button>
+                  </div>
+                </label>
+
+                <label>
+                  Confirm password
+
+                  <div className="input-wrap">
+                    <LockKeyhole size={18} />
+
+                    <input
+                      type="password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      placeholder="Confirm your password"
+                      autoComplete="new-password"
+                      required
+                    />
+                  </div>
+                </label>
+
+                {error && <p className="field-error">{error}</p>}
+
+                {success && (
+                  <p className="success-message">{success}</p>
+                )}
+
+                <button
+                  className="primary-button full"
+                  disabled={busy || !isConfigured}
+                >
+                  {busy ? "Creating account..." : "Create account"}
+                  <ArrowRight size={18} />
+                </button>
+              </form>
             </>
           ) : (
             <>
@@ -360,51 +461,6 @@ export default function Login() {
                     </div>
                   </label>
 
-                  <label>
-                    Password
-
-                    <div className="input-wrap">
-                      <LockKeyhole size={18} />
-
-                      <input
-                        type={showPassword ? "text" : "password"}
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        placeholder="At least 8 characters"
-                        autoComplete="new-password"
-                        minLength={8}
-                        required
-                      />
-
-                      <button
-                        type="button"
-                        className="input-icon-button"
-                        onClick={() => setShowPassword(!showPassword)}
-                      >
-                        {showPassword
-                          ? <EyeOff size={18} />
-                          : <Eye size={18} />}
-                      </button>
-                    </div>
-                  </label>
-
-                  <label>
-                    Confirm password
-
-                    <div className="input-wrap">
-                      <LockKeyhole size={18} />
-
-                      <input
-                        type="password"
-                        value={confirmPassword}
-                        onChange={(e) => setConfirmPassword(e.target.value)}
-                        placeholder="Confirm your password"
-                        autoComplete="new-password"
-                        required
-                      />
-                    </div>
-                  </label>
-
                   {error && (
                     <p className="field-error">{error}</p>
                   )}
@@ -413,7 +469,7 @@ export default function Login() {
                     className="primary-button full"
                     disabled={busy || !isConfigured}
                   >
-                    {busy ? "Creating account..." : "Create account"}
+                    {busy ? "Sending code..." : "Continue"}
                     <ArrowRight size={18} />
                   </button>
 

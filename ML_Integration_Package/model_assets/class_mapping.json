@@ -1,0 +1,17 @@
+{
+    "all_classes": {
+        "Cultural": 0,
+        "Dance": 1,
+        "Panel": 2,
+        "Presentation": 3,
+        "Prize Distribution": 4,
+        "Speech": 5,
+        "Unknown": 6
+    },
+    "active_model_classes": {
+        "Cultural": 0,
+        "Dance": 1,
+        "Presentation": 2,
+        "Unknown": 3
+    }
+}

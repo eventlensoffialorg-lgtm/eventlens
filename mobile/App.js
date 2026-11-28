@@ -138,9 +138,34 @@ export default function App() {
         headers: { Authorization: `Bearer ${session.access_token}` },
         body: form,
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || data.message || "Video analysis failed.");
-      setResult(data.result || data);
+      const uploadData = await response.json();
+      if (!response.ok) {
+        throw new Error(uploadData.error || uploadData.message || "Video analysis failed.");
+      }
+
+      const jobId = uploadData.job_id || uploadData.report_id;
+      if (!jobId) {
+        throw new Error("The backend did not return an analysis job identifier.");
+      }
+
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const jobResponse = await fetch(
+          `${normalizedApiUrl}/analyses/${encodeURIComponent(jobId)}`,
+          { headers: { Authorization: `Bearer ${session.access_token}` } },
+        );
+        const job = await jobResponse.json();
+        if (!jobResponse.ok) {
+          throw new Error(job.error || job.message || "Could not retrieve analysis status.");
+        }
+        if (job.status === "failed") {
+          throw new Error(job.error || "Video analysis failed.");
+        }
+        if (job.status === "completed") {
+          setResult(job.result || job);
+          return;
+        }
+      }
     } catch (requestError) {
       setError(requestError.message || "Could not reach the analysis API.");
     } finally {
@@ -164,6 +189,13 @@ export default function App() {
       ? result.generated_video_url
       : `${normalizedApiUrl.replace(/\/api$/, "")}${result.generated_video_url}`
     : null;
+  const eventClassification = result?.event_classification || {};
+  const classificationScoreLabel =
+    eventClassification.confidence_calibrated === true && result.confidence != null
+      ? `${Math.round(result.confidence * 100)}% calibrated confidence`
+      : eventClassification.model_score != null
+        ? `Uncalibrated raw softmax score ${Number(eventClassification.model_score).toFixed(3)}`
+        : null;
   const generatedHeaders = session?.access_token
     ? { Authorization: `Bearer ${session.access_token}` }
     : {};
@@ -194,7 +226,7 @@ export default function App() {
           <View style={styles.results}>
             <Text style={styles.eyebrow}>ANALYSIS RESULT</Text>
             <Text style={styles.eventTitle}>{result.event_type || "Event detected"}</Text>
-            {result.confidence != null && <Text style={styles.confidence}>{Math.round(result.confidence * 100)}% model confidence</Text>}
+            {classificationScoreLabel && <Text style={styles.confidence}>{classificationScoreLabel}</Text>}
             <Text style={styles.summary}>{result.narrative || result.summary || "No summary was returned."}</Text>
             {result.model_quality && <Text style={styles.modelQuality}>Model status: {result.model_quality}</Text>}
             {Array.isArray(result.detections) && <Text style={styles.detectionCount}>{result.detections.length} object detections</Text>}

@@ -1,37 +1,10 @@
 # EventLens
 
 EventLens is a React/Vite application with a Flask video-analysis API. It uses
-Supabase Auth for accounts, YOLOv8 for object detection, an MLP for event
-classification, and offline natural-language templates for reports.
-
-## Deploy on Render
-
-The root `render.yaml` defines two Render services:
-
-- `eventlens-web`: the public React website.
-- `eventlens-api`: the authenticated Flask API, with a persistent disk for
-  reports and generated media.
-
-To deploy:
-
-1. Push this project to a GitHub repository you can access.
-2. In Render, choose **New + > Blueprint** and connect that repository.
-3. Review the services and costs before applying. The API uses a paid Standard
-   instance and a 1 GB persistent disk so YOLO has memory and reports survive
-   restarts. Render may ask you to add a payment method.
-4. Enter the same Supabase project URL and publishable key for the backend
-   (`SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`) and frontend
-   (`VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`) when prompted.
-   Never use a Supabase service-role/secret key in the frontend.
-5. After the static site deploys, open its `onrender.com` URL and add it to
-   Supabase Dashboard > Authentication > URL Configuration as the Site URL and
-   an allowed Redirect URL (for example `https://your-site.onrender.com/**`).
-6. Confirm email/password sign-in and the API health endpoint:
-   `https://your-api.onrender.com/api/health`.
-
-The frontend API host is wired to the backend host by the Render Blueprint.
-The API validates Supabase access tokens and scopes reports/media to the
-authenticated user.
+local MySQL (`eventlens_db`) with Gmail SMTP OTP verification for accounts,
+YOLOv8 for object detection, MobileNetV2 + MLP / R3D-18 models for event and
+activity analysis, and offline natural-language templates + ReportLab PDF export
+for reports.
 
 ## Local development
 
@@ -39,27 +12,27 @@ Frontend:
 
 ```powershell
 cd frontend
-Copy-Item .env.example .env.local
-npm ci
+npm install
 npm run dev
 ```
 
-Set the Supabase project URL and publishable key in `frontend/.env.local`.
+Configure `VITE_API_BASE_URL=http://127.0.0.1:5000/api` in `frontend/.env` or `frontend/.env.local`.
 
-Backend:
+Backend (from the repository root):
 
 ```powershell
+.\.venv\Scripts\Activate.ps1
 cd backend
-python -m pip install -r requirements.txt
-$env:SUPABASE_URL = "https://your-project.supabase.co"
-$env:SUPABASE_PUBLISHABLE_KEY = "your-publishable-key"
 python app.py
 ```
 
-The browser sends the signed-in user's access token to the API. The backend
-checks it with Supabase Auth. Reports and generated media are stored under
-`DATA_DIR` (the default is the backend directory; Render mounts its persistent
-disk at `/var/data`).
+Configure MySQL (`MYSQL_HOST=localhost`, `MYSQL_PORT=3306`, `MYSQL_USER`,
+`MYSQL_PASSWORD`, `MYSQL_DATABASE=eventlens_db`) and Gmail SMTP credentials
+(`SMTP_HOST`, `SMTP_PORT`, `SMTP_EMAIL`, `SMTP_PASSWORD`, `SMTP_FROM_NAME`) in
+`backend/.env`. Reports and generated media are stored under `DATA_DIR` (the
+default is the `backend` directory).
+
+The API accepts videos up to 250 MB by default (`MAX_UPLOAD_BYTES`).
 
 ## Local event classifier preparation and training
 
@@ -87,14 +60,14 @@ python train_event_classifier.py ..\EventLens_Datasets\processed\event_video_lab
 python evaluate_event_classifier.py event_classifier.json
 ```
 
-Set `EVENT_MLP_MODEL_PATH` to the resulting model for deployment. The default
+Set `EVENT_MLP_MODEL_PATH` to the resulting model if using a custom `.joblib` path. The default
 YOLOv8n model detects general objects only and must not be interpreted as event
 classification evidence.
 
 ## Offline local ML operation
 
-Event video analysis is designed to run locally with OpenCV, YOLO, and
-PyTorch/R3D-18. No external AI API key is required.
+Event video analysis is designed to run locally with OpenCV, YOLO, MobileNetV2 +
+MLP, and PyTorch/R3D-18. No external AI API key is required.
 
 The custom event classifier remains untrained until a validated labelled video
 dataset is available. In that case, EventLens returns an explicitly unclassified
@@ -104,9 +77,7 @@ result rather than inventing an event category.
 
 Reports are generated offline from model output using natural-language
 templates; this release does not call an external generative NLP service.
-Predictions are estimates from up to eight sampled frames, not a verified
-interpretation of an entire video. Uploaded source videos are deleted after
-analysis; annotated media and reports are kept on the Render persistent disk.
+Predictions are estimates from sampled frames, not a verified interpretation of
+an entire video.
 
-The API accepts videos up to 250 MB by default. Change `MAX_UPLOAD_BYTES` in
-Render if needed, while considering processing time and disk capacity.
+The API accepts videos up to 250 MB by default (`MAX_UPLOAD_BYTES`).

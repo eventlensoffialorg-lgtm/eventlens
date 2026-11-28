@@ -8,7 +8,13 @@ import hashlib
 import threading
 import subprocess
 import imageio_ffmpeg
-from database import get_db_connection, initialize_database as initialize_mysql_database
+from database import (
+    DatabaseConfigurationError,
+    DatabaseUnavailableError,
+    get_db_connection,
+    initialize_database as initialize_mysql_database,
+    verify_required_tables,
+)
 import textwrap
 import uuid
 from collections import Counter
@@ -27,6 +33,7 @@ from flask import Flask, g, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
 from sklearn.neural_network import MLPClassifier
 from werkzeug.utils import secure_filename
+from event_mlp import EventLensMLPClassifier, apply_event_mlp_result
 
 from io import BytesIO
 from xml.sax.saxutils import escape
@@ -83,8 +90,6 @@ class EventPipeline:
     def __init__(self):
         self.model_metadata = {}
         self.model = self._build_model()
-        configured_model = os.environ.get("EVENT_MLP_MODEL_PATH")
-        model_path = Path(configured_model) if configured_model else BASE_DIR / "event_classifier.joblib"
         self.model_quality = "trained" if self.model is not None else "unavailable"
         self.yolo_model = self._load_yolo_model()
 
@@ -146,8 +151,8 @@ class EventPipeline:
             f"Configured MLP model does not exist: {model_path}"
         )
 
-     logging.warning(
-        "No trained MLP model found. Event classification is unavailable."
+     logging.debug(
+        "Optional legacy 512-D event_classifier.joblib not present; using EventLensMLPClassifier."
     )
      return None
 
@@ -1134,9 +1139,54 @@ def build_pdf_report(report: dict) -> bytes:
 
     model_quality = report.get("model_quality", "unavailable")
     confidence = report.get("confidence")
+    event_classification = report.get("event_classification") or {}
+    event_classification_status = event_classification.get("classification_status")
+    model_score = event_classification.get("model_score")
 
-    if model_quality == "trained" and confidence is not None:
-        classification_status = f"Trained classifier ({float(confidence):.0%} confidence)"
+    if event_classification_status == "uncertain":
+        candidate = event_classification.get("predicted_category")
+        if (
+            event_classification.get("confidence_calibrated") is True
+            and model_score is not None
+        ):
+            classification_status = (
+                "Uncertain — no event category assigned; "
+                f"top candidate {candidate or 'N/A'} had calibrated score "
+                f"{float(model_score):.3f} below validated threshold"
+            )
+        else:
+            classification_status = "Uncertain — no event category assigned"
+            if model_score is not None:
+                candidate_prefix = (
+                    f"top candidate {candidate} had " if candidate else ""
+                )
+                classification_status += (
+                    f"; {candidate_prefix}raw softmax score "
+                    f"{float(model_score):.3f} (uncalibrated)"
+                )
+    elif event_classification_status == "learned_unknown":
+        if (
+            event_classification.get("confidence_calibrated") is True
+            and confidence is not None
+        ):
+            classification_status = (
+                f"Unknown (out of scope) — calibrated confidence ({float(confidence):.1%})"
+            )
+        else:
+            classification_status = (
+                "Unknown — unverified out-of-scope classification"
+            )
+    elif (
+        event_classification.get("confidence_calibrated") is True
+        and confidence is not None
+    ):
+        classification_status = (
+            f"Calibrated confidence ({float(confidence):.1%})"
+        )
+    elif model_quality == "trained" and confidence is not None:
+        classification_status = (
+            f"Model score {float(confidence):.3f} (not calibrated)"
+        )
     else:
         classification_status = "Unclassified — local evidence is unavailable or insufficient"
 
@@ -1325,7 +1375,7 @@ def build_pdf_report(report: dict) -> bytes:
     return buffer.getvalue()
 
 
-def generate_report_narrative(event_result, detections, frame_count, action_predictions=None, video_duration=None, local_evidence=None):
+def generate_report_narrative(event_result, detections, frame_count, action_predictions=None, video_duration=None, local_evidence=None, action_reporting_message=None):
     observed_objects = event_result.get("top_objects", [])
 
     if observed_objects:
@@ -1339,15 +1389,100 @@ def generate_report_narrative(event_result, detections, frame_count, action_pred
 
     confidence = event_result.get("confidence", 0.0)
     model_quality = event_result.get("model_quality", "unavailable")
+    event_classification = event_result.get("event_classification") or {}
+    classification_status = (
+        event_classification.get("classification_status")
+        or event_classification.get("status")
+    )
 
-    if model_quality == "trained" and event_result.get("event_type") != "unknown":
+    if classification_status == "supported":
+        model_score = event_classification.get(
+            "model_score",
+            event_classification.get("confidence"),
+        )
+        if event_classification.get("confidence_calibrated") is True:
+            score_description = f"calibrated confidence {float(model_score):.3f}"
+        else:
+            score_description = (
+                f"raw model score {float(model_score):.3f} (uncalibrated)"
+            )
+        confidence_text = (
+            f'The MobileNetV2 + MLP classifier predicted '
+            f'"{event_classification["predicted_category"]}" with '
+            f'{score_description}.'
+        )
+    elif classification_status == "learned_unknown":
+        if event_classification.get("confidence_calibrated") is True:
+            model_score = event_classification.get(
+                "model_score",
+                event_classification.get("confidence"),
+            )
+            confidence_text = (
+                "The MobileNetV2 + MLP classifier rejected this video as "
+                "Unknown (outside Cultural, Dance, and Presentation) with "
+                f"calibrated confidence {float(model_score):.3f}."
+            )
+        else:
+            confidence_text = (
+                "The classifier's top category was Unknown, but its label and score "
+                "have not been verified against a held-out EventLens dataset."
+            )
+    elif classification_status == "uncertain":
+        candidate = event_classification.get("predicted_category")
+        model_score = event_classification.get(
+            "model_score",
+            event_classification.get("confidence"),
+        )
+        if model_score is None:
+            confidence_text = (
+                f'The MLP candidate was "{candidate}", but no calibrated score is '
+                "available. No event category was assigned."
+            )
+        elif event_classification.get("confidence_calibrated") is True:
+            confidence_text = (
+                f'The MLP top candidate was "{candidate}" with calibrated score '
+                f"{float(model_score):.3f}, which did not satisfy the validated "
+                "acceptance threshold. No event category was assigned."
+            )
+        else:
+            confidence_text = (
+                f'The MLP top candidate was "{candidate}" with raw softmax score '
+                f'{float(model_score):.3f}. This score is not a calibrated '
+                "probability. No event category was assigned."
+            )
+    elif classification_status == "unsupported":
+        confidence_text = (
+            "The MLP output could not be mapped to a supported event category. "
+            "No event category was assigned."
+        )
+    elif classification_status == "legacy_fallback" and model_quality == "trained":
+        if event_result.get("event_type") == "unknown":
+            confidence_text = (
+                "The existing R3D-18 event classifier predicted its Unknown class "
+                f"with model score {confidence:.3f}."
+            )
+        else:
+            confidence_text = (
+                "The existing R3D-18 event classifier predicted "
+                f'"{event_result["event_type"]}" with model score {confidence:.3f}.'
+            )
+    elif model_quality == "trained" and event_result.get("event_type") != "unknown":
         confidence_text = (
             f"The trained event classifier predicted "
             f'"{event_result["event_type"]}" with model score {confidence:.3f}.'
         )
     else:
-        confidence_text = (
-            "No trained event classifier is currently available. "
+        classifier_message = event_classification.get("message")
+        if classification_status == "unavailable" and classifier_message:
+            confidence_text = (
+                "Event classification could not be completed for this video. "
+                f"{classifier_message} "
+            )
+        else:
+            confidence_text = "No trained event classifier is currently available. "
+            if classifier_message:
+                confidence_text += f"{classifier_message} "
+        confidence_text += (
             "An event category cannot be confirmed from object detections alone."
         )
 
@@ -1366,7 +1501,7 @@ def generate_report_narrative(event_result, detections, frame_count, action_pred
             "These predictions are suggestions and require human verification."
         )
     else:
-        action_text = (
+        action_text = action_reporting_message or (
             "No reliable action predictions were available for this video."
         )
 
@@ -1390,9 +1525,21 @@ def generate_report_narrative(event_result, detections, frame_count, action_pred
 
 pipeline = EventPipeline()
 action_recognizer = VideoActionRecognizer()
+event_mlp_classifier = EventLensMLPClassifier()
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_BYTES", 250 * 1024 * 1024))
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+DEFAULT_CORS_ORIGINS = (
+    "https://manaswi-21.github.io,"
+    "http://localhost:5173,http://127.0.0.1:5173"
+)
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in (
+        os.environ.get("CORS_ORIGINS", "").strip() or DEFAULT_CORS_ORIGINS
+    ).split(",")
+    if origin.strip()
+]
+CORS(app, resources={r"/api/*": {"origins": CORS_ORIGINS}})
 app.register_blueprint(auth_bp, url_prefix="/api/auth")
 
 
@@ -1481,8 +1628,7 @@ def require_auth(handler):
 
                     user = cursor.fetchone()
 
-        except Exception:
-            logging.exception("MySQL authentication failed")
+        except DatabaseUnavailableError:
             return jsonify({"error": "Authentication service is unavailable."}), 503
 
         if not user:
@@ -1495,7 +1641,56 @@ def require_auth(handler):
 
     return wrapped
 
-initialize_mysql_database()
+database_schema_initialized = False
+database_initialization_lock = threading.Lock()
+
+
+def ensure_database_initialized():
+    global database_schema_initialized
+    if database_schema_initialized:
+        return True
+
+    with database_initialization_lock:
+        if database_schema_initialized:
+            return True
+        initialize_mysql_database()
+        database_schema_initialized = True
+    return True
+
+
+try:
+    ensure_database_initialized()
+except (DatabaseConfigurationError, DatabaseUnavailableError):
+    logging.warning(
+        "Database initialization was deferred; check database connectivity and configuration."
+    )
+
+
+@app.before_request
+def initialize_database_when_available():
+    if (
+        request.method == "OPTIONS"
+        or request.path in {"/api/health", "/api/health/database"}
+    ):
+        return None
+
+    try:
+        ensure_database_initialized()
+    except (DatabaseConfigurationError, DatabaseUnavailableError):
+        return jsonify({
+            "error": "Database service is temporarily unavailable."
+        }), 503
+    return None
+
+
+@app.errorhandler(DatabaseUnavailableError)
+def database_unavailable(_error):
+    return jsonify({"error": "Database service is temporarily unavailable."}), 503
+
+
+@app.errorhandler(DatabaseConfigurationError)
+def database_configuration_error(_error):
+    return jsonify({"error": "Database service is not configured."}), 503
 
 
 @app.errorhandler(413)
@@ -1506,6 +1701,23 @@ def request_entity_too_large(_error):
 @app.route("/api/health", methods=["GET"])
 def health_check():
     return jsonify({"status": "ok", "timestamp": datetime.utcnow().isoformat()})
+
+
+@app.route("/api/health/database", methods=["GET"])
+def database_health_check():
+    try:
+        verify_required_tables()
+    except (DatabaseConfigurationError, DatabaseUnavailableError):
+        return jsonify({
+            "status": "error",
+            "database": "unavailable",
+        }), 503
+
+    return jsonify({
+        "status": "ok",
+        "database": "connected",
+        "schema": "ready",
+    })
 
 
 @app.route("/api/media/<path:filename>", methods=["GET"])
@@ -1571,14 +1783,50 @@ def process_analysis_job(job_id, user_id, video_path, safe_name):
 
         update_analysis_job(job_id, "processing", "Recognizing activities", 55)
         action_result = action_recognizer.predict_video(video_path)
-        action_predictions = action_result.get("action_predictions", [])
-        event_features = action_result.pop("_video_feature", None)
-        event_prediction = pipeline.classify_video_features(
-            event_features,
-            event_result,
+        has_action_candidates = bool(
+            action_result.get("action_predictions")
+            or action_result.get("action_timeline")
         )
-        if event_prediction is not None:
-            event_result.update(event_prediction)
+        if has_action_candidates:
+            action_reporting_status = "uncertain"
+            action_reporting_message = (
+                "Activity classification is uncertain: the supplementary "
+                "12-class LinearSVC model produces uncalibrated decision scores, "
+                "so its action labels are withheld."
+            )
+        else:
+            action_reporting_status = "unavailable"
+            action_reporting_message = (
+                "No reliable action predictions were available for this video."
+            )
+        action_predictions = []
+        action_clip_details = []
+        action_timeline = []
+        event_features = action_result.pop("_video_feature", None)
+        mlp_event_prediction = event_mlp_classifier.predict_video(video_path)
+        mlp_status = mlp_event_prediction.get("classification_status")
+        if mlp_status in {
+            "supported",
+            "learned_unknown",
+            "uncertain",
+        }:
+            apply_event_mlp_result(event_result, mlp_event_prediction)
+        elif mlp_status == "unavailable" and pipeline.model is not None:
+            legacy_event_prediction = pipeline.classify_video_features(
+                event_features,
+                event_result,
+            )
+            if legacy_event_prediction is not None:
+                event_result.update(legacy_event_prediction)
+                event_result["event_classification"] = {
+                    "status": "legacy_fallback",
+                    "source": "R3D-18 event classifier",
+                    "mlp_status": mlp_status,
+                }
+            else:
+                apply_event_mlp_result(event_result, mlp_event_prediction)
+        else:
+            apply_event_mlp_result(event_result, mlp_event_prediction)
         update_analysis_job(job_id, "processing", "Tracking visible people", 62)
         tracking_result = pipeline.track_people(frames)
 
@@ -1590,6 +1838,7 @@ def process_analysis_job(job_id, user_id, video_path, safe_name):
             action_predictions,
             video_duration,
             tracking_result,
+            action_reporting_message=action_reporting_message,
         )
 
         annotated_name = None
@@ -1618,7 +1867,7 @@ def process_analysis_job(job_id, user_id, video_path, safe_name):
             else None
         )
 
-        events = action_result.get("action_timeline", [])
+        events = action_timeline
 
         report = {
             "id": job_id,
@@ -1629,6 +1878,7 @@ def process_analysis_job(job_id, user_id, video_path, safe_name):
             "narrative": narrative,
             "confidence": event_result["confidence"],
             "model_quality": event_result["model_quality"],
+            "event_classification": event_result.get("event_classification"),
             "peak_person_count": event_result["peak_person_count"],
             "unique_tracked_people": tracking_result["unique_tracked_people"],
             "peak_tracked_people": tracking_result["peak_tracked_people"],
@@ -1639,9 +1889,10 @@ def process_analysis_job(job_id, user_id, video_path, safe_name):
             "detections": frame_detections[0] if frame_detections else [],
             "top_objects": event_result["top_objects"],
             "action_predictions": action_predictions,
-            "action_clip_details": action_result.get("action_clip_details", []),
-            "action_timeline": action_result.get("action_timeline", []),
-            "action_summary": action_result.get("action_summary", ""),
+            "action_clip_details": action_clip_details,
+            "action_timeline": action_timeline,
+            "action_summary": action_reporting_message,
+            "action_reporting_status": action_reporting_status,
             "action_model_status": action_recognizer.status,
             "original_video_file": video_path.name,
             "original_video_url": f"/api/original/{video_path.name}",
@@ -1664,6 +1915,7 @@ def process_analysis_job(job_id, user_id, video_path, safe_name):
             "event_type": report["event_type"],
             "confidence": report["confidence"],
             "model_quality": report["model_quality"],
+            "event_classification": report.get("event_classification"),
             "peak_person_count": report["peak_person_count"],
             "unique_tracked_people": report["unique_tracked_people"],
             "peak_tracked_people": report["peak_tracked_people"],
@@ -1675,6 +1927,7 @@ def process_analysis_job(job_id, user_id, video_path, safe_name):
             "action_clip_details": report["action_clip_details"],
             "action_timeline": report["action_timeline"],
             "action_summary": report["action_summary"],
+            "action_reporting_status": report["action_reporting_status"],
             "action_model_status": report["action_model_status"],
             "generated_video_url": generated_url,
             "original_video_url": report["original_video_url"],

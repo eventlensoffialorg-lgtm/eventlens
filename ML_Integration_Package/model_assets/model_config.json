@@ -1,0 +1,13 @@
+{
+    "input_dim": 5120,
+    "architecture": "Sequential MLP",
+    "optimizer": "Adam",
+    "learning_rate": 0.0001,
+    "batch_size": 64,
+    "layers": [
+        1024,
+        512,
+        256,
+        4
+    ]
+}

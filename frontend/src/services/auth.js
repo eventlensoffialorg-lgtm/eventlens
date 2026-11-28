@@ -1,12 +1,12 @@
 import api from "./api";
 
 const TOKEN_KEY = "eventlens_token";
+const SESSION_LOOKUP_TIMEOUT_MS = 15000;
 
-export async function signUp({ fullName, email, password }) {
+export async function signUp({ fullName, email }) {
   const { data } = await api.post("/auth/register", {
     fullName,
-    email,
-    password
+    email
   });
 
   return data;
@@ -16,6 +16,15 @@ export async function verifyEmailOtp({ email, otp }) {
   const { data } = await api.post("/auth/verify-otp", {
     email,
     otp
+  });
+
+  return data;
+}
+
+export async function completeRegistration({ email, password }) {
+  const { data } = await api.post("/auth/complete-registration", {
+    email,
+    password
   });
 
   if (data.token) {
@@ -72,14 +81,18 @@ export async function getCurrentSession() {
   }
 
   try {
-    const { data } = await api.get("/auth/me");
+    const { data } = await api.get("/auth/me", {
+      timeout: SESSION_LOOKUP_TIMEOUT_MS
+    });
 
     return {
       access_token: token,
       user: data.user
     };
-  } catch {
-    localStorage.removeItem(TOKEN_KEY);
+  } catch (error) {
+    if ([401, 403].includes(error?.response?.status)) {
+      localStorage.removeItem(TOKEN_KEY);
+    }
     return null;
   }
 }

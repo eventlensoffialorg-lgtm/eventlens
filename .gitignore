@@ -2,6 +2,9 @@
 **/.env
 **/.env.*
 !**/.env.example
+*.pem
+*.key
+*.crt
 
 # Dependencies, build output, and tool caches
 **/node_modules/
@@ -9,6 +12,8 @@
 .dist/
 **/.vite/
 **/__pycache__/
+*.pyc
+*.pyo
 **/.pytest_cache/
 **/.venv/
 **/venv/
@@ -18,3 +23,30 @@ backend/uploads/*
 backend/generated/*
 backend/*.sqlite3
 backend/event_classifier.joblib
+*.log
+*.tmp
+
+# EventLens datasets - keep local, do not upload to GitHub
+EventLens_Datasets/
+EventLens_Verified_Dataset/
+
+# Experimental model outputs and training copies
+backend/best_4class_model.keras
+backend/eventlens_mlp_4class.keras
+backend/eventlens_final_mlp_4class/
+backend/confusion_matrix.png
+backend/training_evaluation_report.txt
+
+# Temporary backups and recovered files
+**/*_before_*.py
+**/*_before_*.jsx
+**/*_before_*.js
+**/*_before_*.txt
+**/*_backup.py
+**/backup_*.py
+README_before_*.md
+styles-before-restore.css
+styles-recovered.css
+
+# Python caches
+**/__pycache__/

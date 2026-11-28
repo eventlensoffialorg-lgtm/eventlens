@@ -74,7 +74,6 @@ The analysis response may contain:
 Bounding box coordinates in this UI are percentages (0–100) relative to the image. Convert pixel coordinates to percentages in the backend or adapt the component.
 
 ## Important
-Set `VITE_API_BASE_URL` to the deployed Flask API host when running outside the
-Render Blueprint. The frontend attaches the signed-in Supabase access token to
-API requests. Never place Supabase service-role/secret keys in `VITE_`
-variables or frontend code. Do not commit `.env.local`.
+Set `VITE_API_BASE_URL` to your local Flask API URL (`http://127.0.0.1:5000/api`)
+in `.env` or `.env.local`. The frontend attaches the session Bearer token to
+API requests. Do not commit `.env` or `.env.local`.

@@ -1,0 +1,23 @@
+{
+    "extractor_backbone": "MobileNetV2_ImageNet",
+    "input_resolution": [
+        160,
+        160
+    ],
+    "uniformly_sampled_frames": 8,
+    "spatial_aggregation": [
+        "mean",
+        "std"
+    ],
+    "temporal_aggregation": [
+        "mean_difference",
+        "std_difference"
+    ],
+    "concatenation_order": [
+        "spatial_mean",
+        "spatial_std",
+        "temporal_mean",
+        "temporal_std"
+    ],
+    "expected_feature_dimension": 5120
+}

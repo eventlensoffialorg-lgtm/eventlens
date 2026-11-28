@@ -20,6 +20,13 @@ export default function Analysis() {
 
   // Get analysis payload first
   const payload = analysis.result?.result || analysis.result || {};
+  const eventClassification = payload.event_classification || {};
+  const classificationScoreLabel =
+    eventClassification.confidence_calibrated === true && payload.confidence != null
+      ? `${Math.round(payload.confidence * 100)}% calibrated confidence`
+      : eventClassification.model_score != null
+        ? `Uncalibrated raw softmax score ${Number(eventClassification.model_score).toFixed(3)}`
+        : null;
 
   // Get report ID
   const reportId =
@@ -76,9 +83,17 @@ async function handleDownloadReport() {
         <form onSubmit={submit}>
           <VideoUploader onFileSelected={setFile} disabled={busy} />
           <label className="field-label event-type-label">Event category <span className="optional">Optional</span>
-            <select className="select-control" value={eventType} onChange={(event) => setEventType(event.target.value)}>
-              <option>Auto-detect</option><option>Cultural programme</option><option>Dance performance</option><option>Singing performance</option><option>Presentation</option><option>Speech</option><option>Panel discussion</option><option>Prize distribution</option>
-            </select>
+
+<select
+  className="select-control"
+  value={eventType}
+  onChange={(event) => setEventType(event.target.value)}
+>
+  <option>Auto-detect</option>
+  <option>Cultural programme</option>
+  <option>Dance performance</option>
+  <option>Presentation</option>
+</select>
           </label>
           <button className="primary-button full" disabled={!file || busy}><Play size={16} /> Start video analysis <ArrowRight size={17} /></button>
         </form>
@@ -124,7 +139,7 @@ async function handleDownloadReport() {
           {payload.action_predictions?.length > 0 && <p><strong>Suggested visible actions:</strong> {payload.action_predictions.map((item) => item.confidence != null ? `${item.action_name} (${Math.round(item.confidence * 100)}%)` : `${item.action_name} (uncalibrated score ${item.model_score})`).join(", ")}</p>}
           {payload.model_quality && <small>Classifier: {payload.model_quality}</small>}
         </div>
-        {payload.confidence != null && <span className="summary-confidence">{Math.round(payload.confidence * 100)}% confidence</span>}
+        {classificationScoreLabel && <span className="summary-confidence">{classificationScoreLabel}</span>}
       </div>}
       <div className="output-grid">
         <div className="panel">
