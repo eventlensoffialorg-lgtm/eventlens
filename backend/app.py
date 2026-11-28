@@ -32,7 +32,7 @@ from dotenv import load_dotenv
 from flask import Flask, g, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
-from xclip_classifier import XCLIPEventClassifier
+from event_mlp import EventLensMLPClassifier, apply_event_mlp_result
 
 from io import BytesIO
 from xml.sax.saxutils import escape
@@ -1142,15 +1142,7 @@ def build_pdf_report(report: dict) -> bytes:
     event_classification_status = event_classification.get("classification_status")
     model_score = event_classification.get("score", event_classification.get("model_score"))
 
-    if event_classification.get("source") == "X-CLIP pretrained zero-shot":
-        if event_classification_status == "supported":
-            classification_status = (
-                f"X-CLIP zero-shot score {float(model_score):.3f} (uncalibrated)"
-                if model_score is not None else "X-CLIP classification (uncalibrated score unavailable)"
-            )
-        else:
-            classification_status = "Unknown — no supported X-CLIP category assigned"
-    elif event_classification_status == "uncertain":
+    if event_classification_status == "uncertain":
         candidate = event_classification.get("predicted_category")
         if (
             event_classification.get("confidence_calibrated") is True
@@ -1339,8 +1331,7 @@ def build_pdf_report(report: dict) -> bytes:
             [65 * mm, 30 * mm, 30 * mm, 45 * mm],
         ))
         story.append(Paragraph(
-            "Timeline entries represent X-CLIP sliding-window model suggestions; "
-            "they are not independently verified event boundaries.",
+            "Timeline entries are supplementary R3D-18 activity suggestions, not independently verified event boundaries. Their scores are not probabilities.",
             styles["SmallNote"],
         ))
     else:
@@ -1403,35 +1394,32 @@ def generate_report_narrative(
 
     event_classification = event_result.get("event_classification") or {}
     status = event_classification.get("classification_status")
-    score = event_classification.get("score")
-    category = (
-        event_classification.get("event_category")
-        or event_classification.get("activity_label")
-        or event_result.get("event_type", "unknown")
-    )
+    category = event_result.get("event_type", "unknown")
+    confidence = event_result.get("confidence")
 
     if status == "supported":
-        score_text = (
-            f" Its raw zero-shot score was {float(score):.3f} (uncalibrated)."
-            if score is not None else ""
-        )
         confidence_text = (
-            f'The pretrained X-CLIP model classified the video as "{category}".'
-            f"{score_text}"
+            f'The EventLens MLP classified the video as "{category.title()}" '
+            f'with calibrated confidence {float(confidence):.1%}.'
+            if confidence is not None
+            else f'The EventLens MLP classified the video as "{category.title()}".'
+        )
+    elif status == "learned_unknown":
+        confidence_text = (
+            "The EventLens MLP classified the video as Unknown, outside the "
+            "supported event categories."
         )
     else:
         confidence_text = (
-            "The pretrained X-CLIP model could not assign this video to a supported "
-            "event category. The event is reported as Unknown."
+            "The EventLens MLP could not confidently assign a supported event "
+            "category. The video is reported as Unknown."
         )
 
     duration_text = (
         f"The uploaded video duration was approximately {video_duration:.1f} seconds. "
         if video_duration is not None else ""
     )
-    action_text = action_reporting_message or (
-        "Activity timeline segments were generated from X-CLIP sliding-window predictions."
-    )
+    action_text = action_reporting_message or "Supplementary activity timeline suggestions should be reviewed against the original video."
 
     return (
         f'{event_result.get("summary", "Video analysis completed.")} '
@@ -1439,13 +1427,14 @@ def generate_report_narrative(
         f"{observation} {confidence_text} {action_text} "
         "This is an automated estimate based on sampled video frames and model predictions. "
         "The visible-person figure is a peak per-frame count, not a count of unique attendees. "
-        "X-CLIP zero-shot scores are not calibrated probabilities. Review the original video "
+        "Supplementary activity scores are not calibrated probabilities. Review the original video "
         "before relying on these results."
     )
 
 
 pipeline = EventPipeline()
-xclip_classifier = XCLIPEventClassifier()
+action_recognizer = VideoActionRecognizer()
+event_mlp_classifier = EventLensMLPClassifier()
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_BYTES", 250 * 1024 * 1024))
 DEFAULT_CORS_ORIGINS = (
@@ -1709,93 +1698,58 @@ def process_analysis_job(job_id, user_id, video_path, safe_name):
         update_analysis_job(
             job_id,
             "processing",
-            "Classifying event with pretrained X-CLIP",
+            "Classifying event with EventLens MLP",
             55,
         )
-        xclip_prediction = xclip_classifier.predict_video(str(video_path))
-        event_result["event_classification"] = xclip_prediction
+        mlp_prediction = event_mlp_classifier.predict_video(str(video_path))
+        classification_status = mlp_prediction.get("classification_status") or "unavailable"
+        apply_event_mlp_result(event_result, mlp_prediction)
 
-        classification_status = xclip_prediction.get("classification_status")
-        allowed_categories = {"cultural", "dance", "presentation"}
-        predicted_category = (
-            xclip_prediction.get("event_category")
-            or xclip_prediction.get("activity_label")
-            or "unknown"
-        )
-        normalized_category = str(predicted_category).strip().lower()
-
-        # Preserve the strict four-label EventLens output vocabulary.
-        if classification_status == "supported" and normalized_category in allowed_categories:
-            event_result["event_type"] = normalized_category
-            raw_score = xclip_prediction.get("score")
-            event_result["confidence"] = (
-                round(float(raw_score), 4) if raw_score is not None else None
-            )
-            event_result["model_quality"] = "pretrained_zero_shot_xclip"
-            event_result["summary"] = (
-                f'The pretrained X-CLIP model classified this video as "{predicted_category}". '
-                f'The peak number of visible person detections in a sampled frame was '
-                f'{event_result.get("peak_person_count", 0)}. Object detections are '
-                "reported separately and do not independently establish the event category."
-            )
-            action_reporting_status = "supported"
-            action_reporting_message = (
-                "Timeline segments are generated from X-CLIP sliding-window predictions. "
-                "Displayed scores are uncalibrated zero-shot scores, not probabilities."
-            )
+        if classification_status == "supported":
+            event_result["event_type"] = str(
+                mlp_prediction.get("event_type") or "Unknown"
+            ).strip().lower()
+        elif classification_status == "learned_unknown":
+            event_result["event_type"] = "unknown"
         else:
             event_result["event_type"] = "unknown"
             event_result["confidence"] = None
-            event_result["model_quality"] = "pretrained_zero_shot_xclip"
-            event_result["summary"] = (
-                "The video could not be confidently assigned to Cultural, Dance, or "
-                "Presentation by the pretrained X-CLIP model. It is classified as Unknown."
+
+        event_result["model_quality"] = mlp_prediction.get("model_quality", "unavailable")
+        if classification_status in {"supported", "learned_unknown"}:
+            event_result["summary"] = mlp_prediction.get(
+                "summary", "EventLens MLP classification completed."
             )
+        else:
+            event_result["summary"] = (
+                "The video could not be confidently assigned to Cultural, Dance, "
+                "or Presentation. It is reported as Unknown."
+            )
+
+        logging.info("EventLens MLP classification status: %s", classification_status)
+        logging.info("EventLens MLP event category: %s", event_result["event_type"])
+
+        update_analysis_job(job_id, "processing", "Generating activity timeline", 60)
+        action_result = action_recognizer.predict_video(str(video_path))
+        action_clip_details = action_result.get("action_clip_details") or []
+        action_timeline = action_result.get("action_timeline") or []
+        action_predictions = []
+        action_model_status = action_recognizer.status or "unavailable"
+
+        if action_timeline:
+            action_reporting_status = "uncertain"
+            action_reporting_message = (
+                "Supplementary R3D-18 activity timeline suggestions are provided. "
+                "They are not confirmed event categories, and their scores are not probabilities."
+            )
+        else:
             action_reporting_status = "unavailable"
             action_reporting_message = (
-                "X-CLIP did not assign a supported event category. Any displayed timeline "
-                "segments are model suggestions and should be reviewed against the video."
+                "No supplementary activity timeline segments could be generated."
             )
 
-        # Convert X-CLIP's actual sliding-window timestamps to the exact schema
-        # consumed by EventTimeline.jsx and the PDF timeline table.
-        window_predictions = xclip_prediction.get("window_predictions") or []
-        action_clip_details = window_predictions
-        for window in window_predictions:
-            try:
-                start_seconds = float(window.get("start", 0))
-                end_seconds = float(window.get("end", 0))
-            except (TypeError, ValueError):
-                continue
-            if end_seconds <= start_seconds:
-                continue
-
-            activity = (
-                window.get("category")
-                or window.get("activity_label")
-                or "Unknown"
-            )
-            score = window.get("score")
-            try:
-                score = float(score) if score is not None else None
-            except (TypeError, ValueError):
-                score = None
-
-            action_timeline.append({
-                "activity_name": str(activity),
-                "label": str(activity),
-                "start_seconds": round(start_seconds, 2),
-                "end_seconds": round(end_seconds, 2),
-                "confidence": score,
-                "model_score": score,
-                "score_type": "uncalibrated zero-shot softmax",
-                "source": "xclip-pretrained-zero-shot",
-                "evidence": "Pretrained X-CLIP sliding-window video prediction.",
-            })
-
-        logging.info("X-CLIP classification status: %s", classification_status)
-        logging.info("X-CLIP event category: %s", event_result["event_type"])
-        logging.info("X-CLIP timeline segment count: %s", len(action_timeline))
+        logging.info("R3D-18 model status: %s", action_model_status)
+        logging.info("R3D-18 timeline segment count: %s", len(action_timeline))
 
         update_analysis_job(
             job_id,
@@ -1866,7 +1820,7 @@ def process_analysis_job(job_id, user_id, video_path, safe_name):
             "action_timeline": action_timeline,
             "action_summary": action_reporting_message,
             "action_reporting_status": action_reporting_status,
-            "action_model_status": classification_status or "unavailable",
+            "action_model_status": action_model_status,
             "original_video_file": video_path.name,
             "original_video_url": f"/api/original/{video_path.name}",
             "events": events,
