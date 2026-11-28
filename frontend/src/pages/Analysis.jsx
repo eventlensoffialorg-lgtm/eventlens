@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertCircle, ArrowRight, Clapperboard, Play, RotateCcw, ScanLine, Download } from "lucide-react";
+import { AlertCircle, ArrowRight, Clapperboard, Play, RotateCcw, ScanLine, Download,Clock3 } from "lucide-react";
 import AnalysisProgress from "../components/AnalysisProgress";
 import DetectionViewer from "../components/DetectionViewer";
 import EventTimeline from "../components/EventTimeline";
@@ -141,6 +141,18 @@ async function handleDownloadReport() {
         </div>
         {classificationScoreLabel && <span className="summary-confidence">{classificationScoreLabel}</span>}
       </div>}
+      <div className="panel">
+  <div className="panel-heading">
+    <div>
+      <h3><Clock3 size={17} /> Event Timeline</h3>
+      <p>Supplementary AI activity suggestions with video timestamps. These are not independently verified events.</p>
+    </div>
+  </div>
+
+  <EventTimeline
+    events={payload.action_timeline || payload.events || []}
+  />
+</div>
       <div className="output-grid">
         <div className="panel">
           <div className="panel-heading">

@@ -14,3 +14,5 @@ reportlab
 imageio-ffmpeg
 lap==0.5.12
 certifi
+tensorflow-hub==0.16.1
+setuptools<81
